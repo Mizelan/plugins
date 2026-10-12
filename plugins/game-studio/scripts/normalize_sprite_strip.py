@@ -130,6 +130,14 @@ def main() -> None:
     slots = split_strip(strip, args.frames)
     contents = [crop_to_content(slot, args.alpha_threshold) for slot in slots]
     anchor_image, anchor_content = load_anchor(args.anchor, args.alpha_threshold)
+    if args.lock_frame1:
+        assert anchor_image is not None
+        if anchor_image.size != (args.frame_size, args.frame_size):
+            # Strip-space scale applied to a game-space anchor silently shrinks frame 01.
+            raise SystemExit(
+                f"--lock-frame1 needs the shipped frame at --frame-size ({args.frame_size}x{args.frame_size}); "
+                f"got {anchor_image.width}x{anchor_image.height}."
+            )
     max_width, max_height = max_content_size([*contents, anchor_content])
     scale = min(args.frame_size / max_width, args.frame_size / max_height)
 
@@ -139,10 +147,7 @@ def main() -> None:
     for index, content in enumerate(contents, start=1):
         if index == 1 and args.lock_frame1:
             assert anchor_image is not None
-            if anchor_image.width == args.frame_size and anchor_image.height == args.frame_size:
-                frame = anchor_image
-            else:
-                frame = compose_frame(anchor_content, args.frame_size, scale)
+            frame = anchor_image
         else:
             frame = compose_frame(content, args.frame_size, scale)
         frame.save(out_dir / f"{index:02d}.png")
