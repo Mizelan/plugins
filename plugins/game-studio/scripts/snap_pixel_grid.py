@@ -284,32 +284,10 @@ def remove_orphans(image: Image.Image, allowed: set[Color]) -> int:
     return len(fixes)
 
 
-def split_frames(native: Image.Image, frames: int) -> list[Image.Image] | None:
-    """Crop every slot with one shared box, the union of all frame bounds.
-
-    Per-frame bounds would re-center each pose: a sword extended to one side would shift the
-    body the other way. A shared box keeps each pose where the strip drew it in its slot.
-    """
-    step = native.width / frames
-    slots = [
-        drop_fragments(native.crop((int(round(index * step)), 0, int(round((index + 1) * step)), native.height)))
-        for index in range(frames)
-    ]
-    boxes = [box for box in (slot.getbbox() for slot in slots) if box]
-    if not boxes:
-        return None
-    union = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    return [slot.crop(union) for slot in slots]
-
-
-def drop_fragments(slot: Image.Image, min_share: float = 0.05) -> Image.Image:
-    """Clear opaque pieces smaller than `min_share` of the largest piece in the slot.
-
-    A pose that crosses its slot edge (a swung sword tip) leaves a detached sliver in the
-    neighboring slot; it is not part of that frame.
-    """
-    pixels = slot.load()
-    width, height = slot.size
+def pieces_of(image: Image.Image) -> list[list[tuple[int, int]]]:
+    """8-connected groups of opaque pixels."""
+    pixels = image.load()
+    width, height = image.size
     seen: set[tuple[int, int]] = set()
     pieces: list[list[tuple[int, int]]] = []
     for start in ((x, y) for y in range(height) for x in range(width)):
@@ -327,14 +305,39 @@ def drop_fragments(slot: Image.Image, min_share: float = 0.05) -> Image.Image:
                         seen.add(n)
                         stack.append(n)
         pieces.append(piece)
-    if not pieces:
-        return slot
-    largest = max(len(piece) for piece in pieces)
-    for piece in pieces:
-        if len(piece) < largest * min_share:
-            for point in piece:
-                pixels[point] = (0, 0, 0, 0)
-    return slot
+    return pieces
+
+
+def split_frames(native: Image.Image, frames: int, min_share: float = 0.05) -> list[Image.Image] | None:
+    """Give each connected piece to the slot holding its center, then crop all frames with one shared box.
+
+    A pose may cross its slot edge (a cape or sword tip); cutting at the edge would clip it and leave a
+    sliver in the neighbor, so whole pieces are assigned instead. Specks under `min_share` of the
+    largest piece in a slot are dropped. The shared slot-relative box keeps each pose where the strip
+    drew it: per-frame bounds would re-center the body when a sword extends to one side.
+    """
+    step = native.width / frames
+    pixels = native.load()
+    by_slot: list[list[list[tuple[int, int]]]] = [[] for _ in range(frames)]
+    for piece in pieces_of(native):
+        xs = [x for x, _ in piece]
+        slot = min(frames - 1, int((min(xs) + max(xs) + 1) / 2 // step))
+        by_slot[slot].append(piece)
+    layers: list[tuple[Image.Image, int]] = []
+    for index, pieces in enumerate(by_slot):
+        layer = Image.new("RGBA", native.size, (0, 0, 0, 0))
+        out = layer.load()
+        largest = max((len(piece) for piece in pieces), default=0)
+        for piece in pieces:
+            if len(piece) >= largest * min_share:
+                for point in piece:
+                    out[point] = pixels[point]
+        layers.append((layer, int(round(index * step))))
+    boxes = [(box[0] - left, box[1], box[2] - left, box[3]) for layer, left in layers if (box := layer.getbbox())]
+    if not boxes:
+        return None
+    union = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return [layer.crop((union[0] + left, union[1], union[2] + left, union[3])) for layer, left in layers]
 
 
 def seed_scale(seed: Image.Image) -> int:
